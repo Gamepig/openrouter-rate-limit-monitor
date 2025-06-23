@@ -1,0 +1,13 @@
+{
+  "defaultApiKey": null,
+  "interval": 60,
+  "warnThreshold": 80,
+  "alertThreshold": 95,
+  "notificationEnabled": false,
+  "quiet": false,
+  "outputFormat": "table",
+  "historyRetentionDays": 30,
+  "maxRetries": 3,
+  "requestTimeout": 10000,
+  "cacheTimeout": 30000
+}
