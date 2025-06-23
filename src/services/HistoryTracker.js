@@ -348,24 +348,38 @@ class HistoryTracker {
         const cutoffTimestamp = Date.now() - (olderThanDays * 24 * 60 * 60 * 1000);
         
         // 清理使用歷史
-        const history = this.db.getData('/usage_history');
+        let history;
+        try {
+          history = this.db.getData('/usage_history');
+          if (!Array.isArray(history)) history = [];
+        } catch (error) {
+          history = [];
+        }
+        
         const filteredHistory = history.filter(record => {
           const shouldDelete = record.timestamp < cutoffTimestamp && 
                              (!apiKey || record.api_key_hash === this.hashApiKey(apiKey));
           if (shouldDelete) deletedCount++;
           return !shouldDelete;
         });
-        this.db.push('/usage_history', filteredHistory);
+        this.db.push('/usage_history', filteredHistory, false);
 
         // 清理警報歷史
-        const alerts = this.alertDb.getData('/alert_history');
+        let alerts;
+        try {
+          alerts = this.alertDb.getData('/alert_history');
+          if (!Array.isArray(alerts)) alerts = [];
+        } catch (error) {
+          alerts = [];
+        }
+        
         const filteredAlerts = alerts.filter(record => {
           const shouldDelete = record.timestamp < cutoffTimestamp && 
                              (!apiKey || record.api_key_hash === this.hashApiKey(apiKey));
           if (shouldDelete) deletedCount++;
           return !shouldDelete;
         });
-        this.alertDb.push('/alert_history', filteredAlerts);
+        this.alertDb.push('/alert_history', filteredAlerts, false);
 
       } else {
         // 清除所有記錄
@@ -373,29 +387,56 @@ class HistoryTracker {
           const keyHash = this.hashApiKey(apiKey);
           
           // 清理使用歷史
-          const history = this.db.getData('/usage_history');
+          let history;
+          try {
+            history = this.db.getData('/usage_history');
+            if (!Array.isArray(history)) history = [];
+          } catch (error) {
+            history = [];
+          }
+          
           const filteredHistory = history.filter(record => {
             const shouldDelete = record.api_key_hash === keyHash;
             if (shouldDelete) deletedCount++;
             return !shouldDelete;
           });
-          this.db.push('/usage_history', filteredHistory);
+          this.db.push('/usage_history', filteredHistory, false);
 
           // 清理警報歷史
-          const alerts = this.alertDb.getData('/alert_history');
+          let alerts;
+          try {
+            alerts = this.alertDb.getData('/alert_history');
+            if (!Array.isArray(alerts)) alerts = [];
+          } catch (error) {
+            alerts = [];
+          }
+          
           const filteredAlerts = alerts.filter(record => {
             const shouldDelete = record.api_key_hash === keyHash;
             if (shouldDelete) deletedCount++;
             return !shouldDelete;
           });
-          this.alertDb.push('/alert_history', filteredAlerts);
+          this.alertDb.push('/alert_history', filteredAlerts, false);
         } else {
-          const history = this.db.getData('/usage_history');
-          const alerts = this.alertDb.getData('/alert_history');
+          let history, alerts;
+          try {
+            history = this.db.getData('/usage_history');
+            if (!Array.isArray(history)) history = [];
+          } catch (error) {
+            history = [];
+          }
+          
+          try {
+            alerts = this.alertDb.getData('/alert_history');
+            if (!Array.isArray(alerts)) alerts = [];
+          } catch (error) {
+            alerts = [];
+          }
+          
           deletedCount = history.length + alerts.length;
           
-          this.db.push('/usage_history', []);
-          this.alertDb.push('/alert_history', []);
+          this.db.push('/usage_history', [], false);
+          this.alertDb.push('/alert_history', [], false);
         }
       }
 
@@ -418,14 +459,30 @@ class HistoryTracker {
       const cutoffTimestamp = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
 
       // 清理使用歷史
-      const history = this.db.getData('/usage_history');
-      const filteredHistory = history.filter(record => record.timestamp >= cutoffTimestamp);
-      this.db.push('/usage_history', filteredHistory);
+      let history;
+      try {
+        history = this.db.getData('/usage_history');
+        if (Array.isArray(history)) {
+          const filteredHistory = history.filter(record => record.timestamp >= cutoffTimestamp);
+          this.db.push('/usage_history', filteredHistory, false);
+        }
+      } catch (error) {
+        // 如果路徑不存在，初始化為空陣列
+        this.db.push('/usage_history', [], false);
+      }
 
       // 清理警報歷史
-      const alerts = this.alertDb.getData('/alert_history');
-      const filteredAlerts = alerts.filter(record => record.timestamp >= cutoffTimestamp);
-      this.alertDb.push('/alert_history', filteredAlerts);
+      let alerts;
+      try {
+        alerts = this.alertDb.getData('/alert_history');
+        if (Array.isArray(alerts)) {
+          const filteredAlerts = alerts.filter(record => record.timestamp >= cutoffTimestamp);
+          this.alertDb.push('/alert_history', filteredAlerts, false);
+        }
+      } catch (error) {
+        // 如果路徑不存在，初始化為空陣列
+        this.alertDb.push('/alert_history', [], false);
+      }
 
     } catch (error) {
       console.warn('舊記錄清理失敗:', error.message);
