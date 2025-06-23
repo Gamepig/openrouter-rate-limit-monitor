@@ -76,32 +76,74 @@ class OpenRouterMonitor {
         const status = await this.getStatus();
         const usage = this.calculateUsagePercentage(status);
 
-        // 記錄歷史
-        await this.historyTracker.record(status);
+        // 記錄歷史（使用 Promise.allSettled 避免記錄失敗影響監控）
+        try {
+          await this.historyTracker.record(status);
+        } catch (historyError) {
+          console.warn('歷史記錄儲存失敗:', historyError.message);
+        }
 
-        // 觸發回調
-        onStatus(status);
+        // 安全地觸發回調
+        try {
+          onStatus(status);
+        } catch (callbackError) {
+          console.warn('狀態回調執行失敗:', callbackError.message);
+        }
 
-        if (usage >= alertThreshold) {
-          onAlert(status, usage);
-        } else if (usage >= warnThreshold) {
-          onWarning(status, usage);
+        // 觸發警報回調
+        try {
+          if (usage >= alertThreshold) {
+            onAlert(status, usage);
+            // 記錄警報
+            await this.historyTracker.recordAlert(
+              status.apiKey, 
+              'alert', 
+              `使用率達到警報水準 (${usage}%)`, 
+              alertThreshold, 
+              usage
+            );
+          } else if (usage >= warnThreshold) {
+            onWarning(status, usage);
+            // 記錄警告
+            await this.historyTracker.recordAlert(
+              status.apiKey, 
+              'warning', 
+              `使用率達到警告水準 (${usage}%)`, 
+              warnThreshold, 
+              usage
+            );
+          }
+        } catch (alertError) {
+          console.warn('警報處理失敗:', alertError.message);
         }
 
         // 安排下次檢查
         if (isRunning) {
-          timeoutId = setTimeout(check, interval * 1000);
+          timeoutId = setTimeout(() => {
+            check().catch(error => {
+              console.error('監控循環發生未處理錯誤:', error.message);
+            });
+          }, interval * 1000);
         }
       } catch (error) {
         console.error('監控檢查失敗:', error.message);
+        
+        // 在錯誤情況下也要繼續監控，但稍微延長間隔
         if (isRunning) {
-          timeoutId = setTimeout(check, interval * 1000);
+          const retryInterval = Math.min(interval * 2, 300); // 最多延長到 5 分鐘
+          timeoutId = setTimeout(() => {
+            check().catch(error => {
+              console.error('監控重試發生錯誤:', error.message);
+            });
+          }, retryInterval * 1000);
         }
       }
     };
 
-    // 開始監控
-    check();
+    // 開始監控（使用 Promise 包裝，避免初始化錯誤未處理）
+    check().catch(error => {
+      console.error('監控初始化失敗:', error.message);
+    });
 
     // 返回控制物件
     return {

@@ -135,9 +135,11 @@ function displayRecommendations(status) {
     recommendations.push('💡 使用率偏高，建議監控使用情況');
   }
 
-  // 檢查免費層級
+  // 檢查層級並提供相應建議
   if (status.tier.isFree) {
     recommendations.push('💰 考慮升級到付費方案以獲得更高的限制');
+  } else {
+    recommendations.push('✅ 付費帳戶享有較高的 Rate Limit 和無使用量限制');
   }
 
   // 檢查每日限制
@@ -164,14 +166,34 @@ function displayRecommendations(status) {
  * @returns {string} 格式化的字串
  */
 function formatCreditsUsage(usage) {
+  // 處理新的額度格式
+  if (usage.total_credits !== undefined) {
+    const usedCredits = usage.credits || 0;
+    const totalCredits = usage.total_credits || 0;
+    const remainingCredits = usage.remaining_credits || 0;
+    
+    if (totalCredits > 0) {
+      const percentage = Math.round((usedCredits / totalCredits) * 100);
+      const color = percentage > 90 ? 'red' : percentage > 70 ? 'yellow' : 'green';
+      
+      return chalk[color](
+        `已用 $${usedCredits.toFixed(2)} / 總額 $${totalCredits.toFixed(2)} ` +
+        `(剩餘 $${remainingCredits.toFixed(2)})`
+      );
+    } else {
+      return `已用 $${usedCredits.toFixed(2)} ${chalk.gray('(無額度限制)')}`;
+    }
+  }
+  
+  // 回退到舊格式（向後相容）
   if (usage.unlimited) {
-    return `${usage.credits.toFixed(2)} (無限制)`;
+    return `${usage.credits.toFixed(2)} ${chalk.gray('(付費帳戶 - 無使用限制)')}`;
   } else if (usage.limit) {
     const percentage = Math.round((usage.credits / usage.limit) * 100);
     const color = percentage > 90 ? 'red' : percentage > 70 ? 'yellow' : 'green';
     return chalk[color](`${usage.credits.toFixed(2)} / ${usage.limit} (${percentage}%)`);
   } else {
-    return `${usage.credits.toFixed(2)}`;
+    return `${usage.credits.toFixed(2)} ${chalk.gray('(本期使用量)')}`;
   }
 }
 
@@ -195,12 +217,17 @@ function formatRateLimit(rate) {
  * @returns {string} 格式化的字串
  */
 function formatDailyLimit(daily) {
-  if (!daily.limit) return '無限制';
+  if (!daily.limit) {
+    return daily.note ? chalk.gray(daily.note) : '無限制';
+  }
   
   const percentage = Math.round((daily.used / daily.limit) * 100);
   const color = percentage > 90 ? 'red' : percentage > 70 ? 'yellow' : 'green';
   
-  return chalk[color](`${daily.used}/${daily.limit} (${percentage}%)`);
+  const baseText = `${daily.used}/${daily.limit} (${percentage}%)`;
+  const noteText = daily.note ? ` - ${daily.note}` : '';
+  
+  return chalk[color](baseText) + chalk.gray(noteText);
 }
 
 /**

@@ -72,8 +72,8 @@ async function watchCommand(options, program) {
     }
   });
 
-  // 錯誤處理
-  process.on('unhandledRejection', (error) => {
+  // 監控錯誤處理（不覆蓋全域錯誤處理器）
+  const monitoringErrorHandler = (error) => {
     consecutiveErrors++;
     
     if (!quiet) {
@@ -82,24 +82,53 @@ async function watchCommand(options, program) {
     
     if (consecutiveErrors >= maxConsecutiveErrors) {
       console.log(chalk.red.bold(`🚨 連續 ${maxConsecutiveErrors} 次錯誤，停止監控`));
-      controller.stop();
+      if (controller && controller.stop) {
+        controller.stop();
+      }
       process.exit(1);
     }
-  });
+  };
+
+  // 只在監控過程中處理特定錯誤
+  const handleMonitoringError = (error) => {
+    if (error && error.message && error.message.includes('monitoring')) {
+      monitoringErrorHandler(error);
+    } else {
+      // 讓全域錯誤處理器處理其他錯誤
+      throw error;
+    }
+  };
 
   // 優雅的退出處理
-  process.on('SIGINT', () => {
+  const gracefulShutdown = (signal) => {
     if (!quiet) {
-      console.log(chalk.yellow('\n\n👋 監控已停止'));
+      console.log(chalk.yellow('\n\n👋 OpenRouter Monitor 正在關閉...'));
     }
-    controller.stop();
+    
+    try {
+      if (controller && controller.stop) {
+        controller.stop();
+      }
+    } catch (error) {
+      console.warn('清理監控器時發生錯誤:', error.message);
+    }
+    
     process.exit(0);
-  });
+  };
 
-  process.on('SIGTERM', () => {
-    controller.stop();
-    process.exit(0);
-  });
+  process.on('SIGINT', gracefulShutdown);
+  process.on('SIGTERM', gracefulShutdown);
+
+  // 使用 try-catch 包裝監控啟動，處理初始化錯誤
+  try {
+    // 確保監控器成功啟動
+    if (!controller || typeof controller.stop !== 'function') {
+      throw new Error('監控器初始化失败');
+    }
+  } catch (error) {
+    console.error(chalk.red(`❌ 監控啟動失敗: ${error.message}`));
+    process.exit(1);
+  }
 }
 
 /**
@@ -133,6 +162,16 @@ function displayStatusUpdate(timestamp, status, usage, lastStatus) {
   const dailyInfo = status.limits.daily.limit ? 
     `${status.limits.daily.used}/${status.limits.daily.limit}` : '∞';
   
+  // 格式化額度資訊 - 顯示已用/剩餘
+  let creditsInfo;
+  if (status.usage.total_credits !== undefined) {
+    const usedCredits = status.usage.credits || 0;
+    const remainingCredits = status.usage.remaining_credits || 0;
+    creditsInfo = `Used: $${usedCredits.toFixed(2)} | Left: $${remainingCredits.toFixed(2)}`;
+  } else {
+    creditsInfo = `$${(status.usage.credits || 0).toFixed(2)}`;
+  }
+  
   // 檢查是否有變化
   const changeIndicators = getChangeIndicators(status, lastStatus);
 
@@ -141,7 +180,7 @@ function displayStatusUpdate(timestamp, status, usage, lastStatus) {
       `[${timestamp}] ${statusIcon} ${statusText} - ` +
       `Rate: ${rateInfo} (${usage}%)${changeIndicators.rate} | ` +
       `Daily: ${dailyInfo}${changeIndicators.daily} | ` +
-      `Credits: ${status.usage.credits.toFixed(2)}${changeIndicators.credits}`
+      `${creditsInfo}${changeIndicators.credits}`
     )
   );
 }

@@ -28,18 +28,9 @@ class HistoryTracker {
       // 初始化警報記錄資料庫
       this.alertDb = new JsonDB(new Config(this.alertDbPath, true, false, '/'));
       
-      // 確保根路徑存在
-      try {
-        this.db.getData('/usage_history');
-      } catch (error) {
-        this.db.push('/usage_history', [], false);
-      }
-      
-      try {
-        this.alertDb.getData('/alert_history');
-      } catch (error) {
-        this.alertDb.push('/alert_history', [], false);
-      }
+      // 使用 getObjectDefault 確保路徑存在，避免 DataError
+      this.db.getObjectDefault('/usage_history', []);
+      this.alertDb.getObjectDefault('/alert_history', []);
       
     } catch (error) {
       console.warn('資料庫初始化失敗:', error.message);
@@ -77,14 +68,9 @@ class HistoryTracker {
         created_at: timestamp
       };
 
-      // 獲取現有記錄
-      let history;
-      try {
-        history = this.db.getData('/usage_history');
-        if (!Array.isArray(history)) {
-          history = [];
-        }
-      } catch (error) {
+      // 獲取現有記錄，使用 getObjectDefault 避免 DataError
+      let history = this.db.getObjectDefault('/usage_history', []);
+      if (!Array.isArray(history)) {
         history = [];
       }
       
@@ -127,14 +113,9 @@ class HistoryTracker {
         created_at: timestamp
       };
 
-      // 獲取現有警報記錄
-      let alerts;
-      try {
-        alerts = this.alertDb.getData('/alert_history');
-        if (!Array.isArray(alerts)) {
-          alerts = [];
-        }
-      } catch (error) {
+      // 獲取現有警報記錄，使用 getObjectDefault 避免 DataError
+      let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+      if (!Array.isArray(alerts)) {
         alerts = [];
       }
       
@@ -167,11 +148,9 @@ class HistoryTracker {
       const sinceTimestamp = Date.now() - (days * 24 * 60 * 60 * 1000);
       let history;
       
-      try {
-        history = this.db.getData('/usage_history');
-      } catch (error) {
-        // 如果路徑不存在，初始化為空陣列
-        this.db.push('/usage_history', [], false);
+      // 使用 getObjectDefault 安全獲取歷史記錄
+      history = this.db.getObjectDefault('/usage_history', []);
+      if (!Array.isArray(history)) {
         history = [];
       }
 
@@ -218,7 +197,7 @@ class HistoryTracker {
    * @returns {Array} 警報記錄
    */
   async getAlertHistory(options = {}) {
-    if (!this.db) return [];
+    if (!this.alertDb) return [];
 
     const {
       days = 7,
@@ -229,32 +208,37 @@ class HistoryTracker {
 
     try {
       const sinceTimestamp = Date.now() - (days * 24 * 60 * 60 * 1000);
-      let query = `
-        SELECT timestamp, alert_type, message, threshold_value, actual_value
-        FROM alert_history 
-        WHERE timestamp >= ?
-      `;
-      const params = [sinceTimestamp];
-
-      if (apiKey) {
-        query += ' AND api_key_hash = ?';
-        params.push(this.hashApiKey(apiKey));
+      
+      // 使用 getObjectDefault 安全獲取警報歷史
+      let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+      if (!Array.isArray(alerts)) {
+        alerts = [];
       }
 
-      if (alertType) {
-        query += ' AND alert_type = ?';
-        params.push(alertType);
+      // 篩選條件
+      let filteredAlerts = alerts.filter(record => {
+        if (record.timestamp < sinceTimestamp) return false;
+        if (apiKey && record.api_key_hash !== this.hashApiKey(apiKey)) return false;
+        if (alertType && record.alert_type !== alertType) return false;
+        return true;
+      });
+
+      // 排序（最新的在前）
+      filteredAlerts.sort((a, b) => b.timestamp - a.timestamp);
+
+      // 限制數量
+      if (limit && filteredAlerts.length > limit) {
+        filteredAlerts = filteredAlerts.slice(0, limit);
       }
 
-      query += ' ORDER BY timestamp DESC LIMIT ?';
-      params.push(limit);
-
-      const stmt = this.db.prepare(query);
-      const rows = stmt.all(...params);
-
-      return rows.map(row => ({
-        ...row,
-        date: new Date(row.timestamp).toISOString()
+      // 格式化輸出
+      return filteredAlerts.map(record => ({
+        timestamp: record.timestamp,
+        date: new Date(record.timestamp).toISOString(),
+        alert_type: record.alert_type,
+        message: record.message,
+        threshold_value: record.threshold_value,
+        actual_value: record.actual_value
       }));
 
     } catch (error) {
@@ -269,60 +253,86 @@ class HistoryTracker {
    * @returns {Object} 統計資料
    */
   async getStatistics(options = {}) {
-    if (!this.db) return {};
+    if (!this.db || !this.alertDb) return {};
 
     const { days = 7, apiKey = null } = options;
 
     try {
       const sinceTimestamp = Date.now() - (days * 24 * 60 * 60 * 1000);
-      let whereClause = 'WHERE timestamp >= ?';
-      const params = [sinceTimestamp];
+      
+      // 獲取使用歷史
+      let history = this.db.getObjectDefault('/usage_history', []);
+      if (!Array.isArray(history)) history = [];
+      
+      // 獲取警報歷史
+      let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+      if (!Array.isArray(alerts)) alerts = [];
 
-      if (apiKey) {
-        whereClause += ' AND api_key_hash = ?';
-        params.push(this.hashApiKey(apiKey));
-      }
+      // 篩選歷史記錄
+      const filteredHistory = history.filter(record => {
+        if (record.timestamp < sinceTimestamp) return false;
+        if (apiKey && record.api_key_hash !== this.hashApiKey(apiKey)) return false;
+        return true;
+      });
 
-      // 基本統計
-      const basicStats = this.db.prepare(`
-        SELECT 
-          COUNT(*) as total_records,
-          AVG(credits_used) as avg_credits_used,
-          MAX(credits_used) as max_credits_used,
-          AVG(rate_used) as avg_rate_used,
-          MAX(rate_used) as max_rate_used,
-          AVG(health_percentage) as avg_health_percentage
-        FROM usage_history ${whereClause}
-      `).get(...params);
+      // 篩選警報記錄
+      const filteredAlerts = alerts.filter(record => {
+        if (record.timestamp < sinceTimestamp) return false;
+        if (apiKey && record.api_key_hash !== this.hashApiKey(apiKey)) return false;
+        return true;
+      });
 
-      // 警報統計
-      const alertStats = this.db.prepare(`
-        SELECT 
-          alert_type,
-          COUNT(*) as count
-        FROM alert_history ${whereClause}
-        GROUP BY alert_type
-      `).all(...params);
+      // 計算基本統計
+      const basicStats = {
+        total_records: filteredHistory.length,
+        avg_credits_used: filteredHistory.length > 0 ? 
+          filteredHistory.reduce((sum, r) => sum + (r.credits_used || 0), 0) / filteredHistory.length : 0,
+        max_credits_used: filteredHistory.length > 0 ? 
+          Math.max(...filteredHistory.map(r => r.credits_used || 0)) : 0,
+        avg_rate_used: filteredHistory.length > 0 ? 
+          filteredHistory.reduce((sum, r) => sum + (r.rate_used || 0), 0) / filteredHistory.length : 0,
+        max_rate_used: filteredHistory.length > 0 ? 
+          Math.max(...filteredHistory.map(r => r.rate_used || 0)) : 0,
+        avg_health_percentage: filteredHistory.length > 0 ? 
+          filteredHistory.reduce((sum, r) => sum + (r.health_percentage || 0), 0) / filteredHistory.length : 0
+      };
 
-      // 每日趨勢
-      const dailyTrend = this.db.prepare(`
-        SELECT 
-          DATE(timestamp / 1000, 'unixepoch') as date,
-          AVG(credits_used) as avg_credits,
-          AVG(rate_used) as avg_rate,
-          COUNT(*) as records
-        FROM usage_history ${whereClause}
-        GROUP BY DATE(timestamp / 1000, 'unixepoch')
-        ORDER BY date DESC
-      `).all(...params);
+      // 計算警報統計
+      const alertStats = {};
+      filteredAlerts.forEach(alert => {
+        const type = alert.alert_type || 'unknown';
+        alertStats[type] = (alertStats[type] || 0) + 1;
+      });
+
+      // 計算每日趨勢
+      const dailyTrend = {};
+      filteredHistory.forEach(record => {
+        const date = new Date(record.timestamp).toISOString().split('T')[0];
+        if (!dailyTrend[date]) {
+          dailyTrend[date] = {
+            date,
+            total_credits: 0,
+            total_rate: 0,
+            records: 0
+          };
+        }
+        dailyTrend[date].total_credits += record.credits_used || 0;
+        dailyTrend[date].total_rate += record.rate_used || 0;
+        dailyTrend[date].records += 1;
+      });
+
+      // 計算平均值並排序
+      const dailyTrendArray = Object.values(dailyTrend).map(day => ({
+        date: day.date,
+        avg_credits: day.records > 0 ? day.total_credits / day.records : 0,
+        avg_rate: day.records > 0 ? day.total_rate / day.records : 0,
+        records: day.records
+      })).sort((a, b) => b.date.localeCompare(a.date));
 
       return {
         basic: basicStats,
-        alerts: alertStats.reduce((acc, row) => {
-          acc[row.alert_type] = row.count;
-          return acc;
-        }, {}),
-        dailyTrend: dailyTrend
+        alerts: alertStats,
+        dailyTrend: dailyTrendArray
       };
 
     } catch (error) {
@@ -347,14 +357,9 @@ class HistoryTracker {
       if (olderThanDays) {
         const cutoffTimestamp = Date.now() - (olderThanDays * 24 * 60 * 60 * 1000);
         
-        // 清理使用歷史
-        let history;
-        try {
-          history = this.db.getData('/usage_history');
-          if (!Array.isArray(history)) history = [];
-        } catch (error) {
-          history = [];
-        }
+        // 清理使用歷史，使用 getObjectDefault 避免 DataError
+        let history = this.db.getObjectDefault('/usage_history', []);
+        if (!Array.isArray(history)) history = [];
         
         const filteredHistory = history.filter(record => {
           const shouldDelete = record.timestamp < cutoffTimestamp && 
@@ -364,14 +369,9 @@ class HistoryTracker {
         });
         this.db.push('/usage_history', filteredHistory, false);
 
-        // 清理警報歷史
-        let alerts;
-        try {
-          alerts = this.alertDb.getData('/alert_history');
-          if (!Array.isArray(alerts)) alerts = [];
-        } catch (error) {
-          alerts = [];
-        }
+        // 清理警報歷史，使用 getObjectDefault 避免 DataError
+        let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+        if (!Array.isArray(alerts)) alerts = [];
         
         const filteredAlerts = alerts.filter(record => {
           const shouldDelete = record.timestamp < cutoffTimestamp && 
@@ -386,14 +386,9 @@ class HistoryTracker {
         if (apiKey) {
           const keyHash = this.hashApiKey(apiKey);
           
-          // 清理使用歷史
-          let history;
-          try {
-            history = this.db.getData('/usage_history');
-            if (!Array.isArray(history)) history = [];
-          } catch (error) {
-            history = [];
-          }
+          // 清理使用歷史，使用 getObjectDefault 避免 DataError
+          let history = this.db.getObjectDefault('/usage_history', []);
+          if (!Array.isArray(history)) history = [];
           
           const filteredHistory = history.filter(record => {
             const shouldDelete = record.api_key_hash === keyHash;
@@ -402,14 +397,9 @@ class HistoryTracker {
           });
           this.db.push('/usage_history', filteredHistory, false);
 
-          // 清理警報歷史
-          let alerts;
-          try {
-            alerts = this.alertDb.getData('/alert_history');
-            if (!Array.isArray(alerts)) alerts = [];
-          } catch (error) {
-            alerts = [];
-          }
+          // 清理警報歷史，使用 getObjectDefault 避免 DataError
+          let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+          if (!Array.isArray(alerts)) alerts = [];
           
           const filteredAlerts = alerts.filter(record => {
             const shouldDelete = record.api_key_hash === keyHash;
@@ -418,20 +408,12 @@ class HistoryTracker {
           });
           this.alertDb.push('/alert_history', filteredAlerts, false);
         } else {
-          let history, alerts;
-          try {
-            history = this.db.getData('/usage_history');
-            if (!Array.isArray(history)) history = [];
-          } catch (error) {
-            history = [];
-          }
+          // 清除所有記錄，使用 getObjectDefault 避免 DataError
+          let history = this.db.getObjectDefault('/usage_history', []);
+          if (!Array.isArray(history)) history = [];
           
-          try {
-            alerts = this.alertDb.getData('/alert_history');
-            if (!Array.isArray(alerts)) alerts = [];
-          } catch (error) {
-            alerts = [];
-          }
+          let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+          if (!Array.isArray(alerts)) alerts = [];
           
           deletedCount = history.length + alerts.length;
           
@@ -458,30 +440,18 @@ class HistoryTracker {
       const retentionDays = this.config.get('historyRetentionDays', 30);
       const cutoffTimestamp = Date.now() - (retentionDays * 24 * 60 * 60 * 1000);
 
-      // 清理使用歷史
-      let history;
-      try {
-        history = this.db.getData('/usage_history');
-        if (Array.isArray(history)) {
-          const filteredHistory = history.filter(record => record.timestamp >= cutoffTimestamp);
-          this.db.push('/usage_history', filteredHistory, false);
-        }
-      } catch (error) {
-        // 如果路徑不存在，初始化為空陣列
-        this.db.push('/usage_history', [], false);
+      // 清理使用歷史，使用 getObjectDefault 避免 DataError
+      let history = this.db.getObjectDefault('/usage_history', []);
+      if (Array.isArray(history)) {
+        const filteredHistory = history.filter(record => record.timestamp >= cutoffTimestamp);
+        this.db.push('/usage_history', filteredHistory, false);
       }
 
-      // 清理警報歷史
-      let alerts;
-      try {
-        alerts = this.alertDb.getData('/alert_history');
-        if (Array.isArray(alerts)) {
-          const filteredAlerts = alerts.filter(record => record.timestamp >= cutoffTimestamp);
-          this.alertDb.push('/alert_history', filteredAlerts, false);
-        }
-      } catch (error) {
-        // 如果路徑不存在，初始化為空陣列
-        this.alertDb.push('/alert_history', [], false);
+      // 清理警報歷史，使用 getObjectDefault 避免 DataError
+      let alerts = this.alertDb.getObjectDefault('/alert_history', []);
+      if (Array.isArray(alerts)) {
+        const filteredAlerts = alerts.filter(record => record.timestamp >= cutoffTimestamp);
+        this.alertDb.push('/alert_history', filteredAlerts, false);
       }
 
     } catch (error) {
