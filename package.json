@@ -1,7 +1,7 @@
 {
   "name": "openrouter-rate-limit-monitor",
-  "version": "1.0.0",
-  "description": "A portable CLI tool for monitoring OpenRouter API rate limits and usage",
+  "version": "2.0.0",
+  "description": "Enterprise-grade OpenRouter API monitoring tool with local request tracking and accurate credit monitoring",
   "main": "src/index.js",
   "bin": {
     "openrouter-monitor": "./bin/openrouter-monitor.js",
@@ -22,7 +22,11 @@
     "cli",
     "portable",
     "ai",
-    "llm"
+    "llm",
+    "request-tracking",
+    "credit-monitoring",
+    "usage-analytics",
+    "2025"
   ],
   "author": "Your Name",
   "license": "MIT",

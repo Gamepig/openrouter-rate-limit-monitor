@@ -138,6 +138,9 @@ keys.json
 .secret
 secrets/
 
+# Local request tracking data
+.openrouter-requests.json
+
 # Test files and outputs
 test-output/
 test-results/

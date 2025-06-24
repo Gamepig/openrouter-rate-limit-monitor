@@ -58,10 +58,14 @@ class RateLimitService {
       const authData = authResponse.data.data;
       const creditsData = creditsResponse.data.data;
       
+      // 從 HTTP headers 中提取 Rate Limit 資訊
+      const rateLimitHeaders = this.extractRateLimitInfo(authResponse.headers);
+      
       // 合併資料
       const combinedData = {
         ...authData,
-        credits: creditsData
+        credits: creditsData,
+        rateLimitHeaders: rateLimitHeaders
       };
       
       const status = this.formatStatus(combinedData, key);
@@ -81,7 +85,19 @@ class RateLimitService {
         if (status === 401) {
           throw new Error(`API Key 無效或已過期: ${message}`);
         } else if (status === 429) {
-          throw new Error(`Rate limit 已達上限: ${message}`);
+          // 詳細的 429 錯誤處理
+          const resetInfo = this.extractRateLimitInfo(error.response.headers);
+          const errorDetails = [
+            `Rate limit 已達上限: ${message}`,
+            `免費模型限制：每分鐘20次請求`,
+            `每日限制：已購買10+額度為1000次/日，未購買為50次/日`
+          ];
+          
+          if (resetInfo.retryAfter) {
+            errorDetails.push(`建議等待 ${resetInfo.retryAfter} 秒後重試`);
+          }
+          
+          throw new Error(errorDetails.join('\n'));
         } else if (status >= 500) {
           throw new Error(`OpenRouter 伺服器錯誤 (${status}): ${message}`);
         } else {
@@ -180,21 +196,36 @@ class RateLimitService {
    * @returns {Object} Rate limit 資訊
    */
   calculateRateLimit(data) {
-    // 使用 OpenRouter API 實際回傳的 rate_limit 資訊
-    const rateLimit = data.rate_limit || {};
-    const requests = rateLimit.requests || 20; // 預設值
-    const interval = rateLimit.interval || '60s'; // 預設值
+    // 檢查是否有從 headers 獲取的實際 Rate Limit 資訊
+    const headers = data.rateLimitHeaders || {};
     
-    // 解析間隔時間
-    const intervalMs = this.parseInterval(interval);
-    const resetTime = new Date(Date.now() + intervalMs);
+    // 預設的 Rate Limit（根據官方文件）
+    const defaultLimit = 20; // 每分鐘 20 次請求（免費模型）
+    const interval = '60s'; // 每分鐘
+    
+    // 使用 headers 資訊（如果可用）或預設值
+    const limit = headers.limit || defaultLimit;
+    const remaining = headers.remaining;
+    const resetTime = headers.resetTime ? 
+      new Date(headers.resetTime).toISOString() : 
+      new Date(Date.now() + this.parseInterval(interval)).toISOString();
+    
+    // 計算已使用數量（如果有剩餘數量資訊）
+    const used = (remaining !== null && limit) ? limit - remaining : null;
     
     return {
-      used: 0, // API 沒有提供已使用數量，設為 0
-      limit: requests,
-      remaining: requests,
-      resetTime: resetTime.toISOString(),
-      interval: interval
+      used: used,
+      limit: limit,
+      remaining: remaining,
+      resetTime: resetTime,
+      interval: interval,
+      note: used !== null ? 
+        `每分鐘${limit}次限制，剩餘${remaining}次` : 
+        '每分鐘20次限制（免費模型），API通常不提供當前使用量',
+      hasRealTimeData: remaining !== null,
+      apiLimitation: remaining === null ? 
+        'OpenRouter 只在超過限制時返回 429 錯誤' : 
+        '從 API headers 獲取即時限制資訊'
     };
   }
 
@@ -204,28 +235,38 @@ class RateLimitService {
    * @returns {Object} 每日限制資訊
    */
   calculateDailyLimit(data) {
-    const isFree = data.is_free_tier !== false;
     const creditsInfo = data.credits || {};
     const totalCredits = creditsInfo.total_credits || 0;
+    const isFree = data.is_free_tier !== false;
     
-    // 根據 OpenRouter 官方文件：
-    // - 購買至少 10 額度：免費模型每日 1000 次請求
-    // - 未購買 10 額度：免費模型每日 50 次請求  
-    // - 付費帳戶：通常無每日限制
+    // 根據 OpenRouter 2025年最新規則：
+    // - 免費模型(:free) 每日限制
+    // - 未購買 $10 額度：50 次請求/日
+    // - 已購買 $10+ 額度：1000 次請求/日
+    // - 付費模型：無每日限制
     let dailyLimit = null;
+    let accountType = '';
     
-    if (isFree) {
-      dailyLimit = totalCredits >= 10 ? 1000 : 50;
+    // 判斷帳戶類型和對應限制
+    if (totalCredits >= 10) {
+      dailyLimit = 1000; // 已購買$10+額度的帳戶
+      accountType = '已購買$10+額度';
+    } else if (totalCredits > 0) {
+      dailyLimit = 50; // 有額度但未達$10
+      accountType = '未達$10額度';
+    } else {
+      dailyLimit = 50; // 免費用戶
+      accountType = '免費用戶';
     }
     
     return {
-      used: 0, // API 沒有提供當日使用量
+      used: null, // OpenRouter API 不提供當日請求計數
       limit: dailyLimit,
-      remaining: dailyLimit ? dailyLimit : null,
+      remaining: null,
       resetTime: this.getNextMidnight().toISOString(),
-      note: isFree ? 
-        (totalCredits >= 10 ? '已購買10+額度，享有1000次/日' : '未購買10額度，限制50次/日') :
-        '付費帳戶無每日限制'
+      note: `${accountType} - 免費模型限制${dailyLimit}次/日 (2025年新規則)`,
+      accountType: accountType,
+      apiLimitation: 'OpenRouter 不透過 API 提供每日請求計數統計'
     };
   }
 
@@ -371,6 +412,20 @@ class RateLimitService {
       case 'd': return value * 24 * 60 * 60 * 1000;
       default: return 60000;
     }
+  }
+
+  /**
+   * 從 HTTP headers 中提取 Rate Limit 資訊
+   * @param {Object} headers - HTTP 回應 headers
+   * @returns {Object} Rate limit 資訊
+   */
+  extractRateLimitInfo(headers) {
+    return {
+      retryAfter: headers['retry-after'] ? parseInt(headers['retry-after']) : null,
+      resetTime: headers['x-ratelimit-reset'] ? parseInt(headers['x-ratelimit-reset']) : null,
+      remaining: headers['x-ratelimit-remaining'] ? parseInt(headers['x-ratelimit-remaining']) : null,
+      limit: headers['x-ratelimit-limit'] ? parseInt(headers['x-ratelimit-limit']) : null
+    };
   }
 
   /**

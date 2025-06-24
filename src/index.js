@@ -7,12 +7,14 @@
 const RateLimitService = require('./services/RateLimitService');
 const ConfigManager = require('./services/ConfigManager');
 const HistoryTracker = require('./services/HistoryTracker');
+const RequestTracker = require('./services/RequestTracker');
 
 class OpenRouterMonitor {
   constructor(options = {}) {
     this.config = new ConfigManager(options.configPath);
     this.rateLimitService = new RateLimitService(this.config);
     this._historyTracker = null;
+    this.requestTracker = new RequestTracker(options.requestTrackerPath);
   }
 
   /**
@@ -26,14 +28,32 @@ class OpenRouterMonitor {
   }
 
   /**
-   * 獲取當前 API 狀態
+   * 獲取當前 API 狀態（包含本地追蹤的請求數量）
    * @param {Object} options - 選項
    * @param {string} options.apiKey - API Key (可選)
    * @param {boolean} options.refresh - 是否強制重新檢查
    * @returns {Promise<Object>} API 狀態資訊
    */
   async getStatus(options = {}) {
-    return await this.rateLimitService.getStatus(options);
+    const status = await this.rateLimitService.getStatus(options);
+    
+    // 添加本地追蹤的請求數量
+    const apiKey = options.apiKey || this.config.get('defaultApiKey') || process.env.OPENROUTER_API_KEY || status.apiKey;
+    const todayRequests = this.requestTracker.getTodayRequests(apiKey);
+    const dailyLimit = status.limits.daily.limit;
+    
+    if (dailyLimit) {
+      const quotaInfo = this.requestTracker.getQuotaInfo(dailyLimit, apiKey);
+      status.limits.daily.localTracked = {
+        used: quotaInfo.used,
+        remaining: quotaInfo.remaining,
+        percentage: quotaInfo.percentage,
+        status: quotaInfo.status,
+        note: `本地追蹤: 今日已使用 ${quotaInfo.used}/${dailyLimit} 次請求`
+      };
+    }
+
+    return status;
   }
 
   /**
@@ -195,6 +215,30 @@ class OpenRouterMonitor {
    */
   async testApiKey(apiKey) {
     return await this.rateLimitService.testApiKey(apiKey);
+  }
+
+  /**
+   * 記錄一次 API 請求（用於本地追蹤）
+   * @param {string} apiKey - API Key
+   * @param {string} model - 使用的模型
+   */
+  recordRequest(apiKey = 'default', model = 'unknown') {
+    this.requestTracker.recordRequest(apiKey, model);
+  }
+
+  /**
+   * 獲取本地追蹤的請求統計
+   * @param {Object} options - 選項
+   * @returns {Object} 請求統計
+   */
+  getRequestStats(options = {}) {
+    const { days = 7, apiKey = 'default' } = options;
+    
+    return {
+      today: this.requestTracker.getTodayDetailedStats(),
+      history: this.requestTracker.getHistoryStats(days),
+      todayForKey: this.requestTracker.getTodayRequests(apiKey)
+    };
   }
 }
 

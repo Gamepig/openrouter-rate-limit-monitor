@@ -158,9 +158,20 @@ function displayStatusUpdate(timestamp, status, usage, lastStatus) {
   }
 
   // 準備顯示資訊
-  const rateInfo = `${status.limits.rate.used}/${status.limits.rate.limit}`;
-  const dailyInfo = status.limits.daily.limit ? 
-    `${status.limits.daily.used}/${status.limits.daily.limit}` : '∞';
+  const rateInfo = status.limits.rate.used !== null ? 
+    `${status.limits.rate.used}/${status.limits.rate.limit}` :
+    `null/${status.limits.rate.limit}`;
+  
+  // 優先使用本地追蹤的每日使用量
+  let dailyInfo;
+  if (status.limits.daily.limit) {
+    const dailyUsed = status.limits.daily.localTracked ? 
+      status.limits.daily.localTracked.used : 
+      status.limits.daily.used;
+    dailyInfo = `${dailyUsed !== null ? dailyUsed : 'null'}/${status.limits.daily.limit}`;
+  } else {
+    dailyInfo = '∞';
+  }
   
   // 格式化額度資訊 - 顯示已用/剩餘
   let creditsInfo;
@@ -200,21 +211,34 @@ function getChangeIndicators(current, last) {
 
   if (!last) return indicators;
 
-  // Rate limit 變化
-  const rateDiff = current.limits.rate.used - last.limits.rate.used;
-  if (rateDiff > 0) {
-    indicators.rate = chalk.red(` ↑${rateDiff}`);
-  } else if (rateDiff < 0) {
-    indicators.rate = chalk.green(` ↓${Math.abs(rateDiff)}`);
+  // Rate limit 變化（如果有實際數據）
+  if (current.limits.rate.used !== null && last.limits.rate.used !== null) {
+    const rateDiff = current.limits.rate.used - last.limits.rate.used;
+    if (rateDiff > 0) {
+      indicators.rate = chalk.red(` ↑${rateDiff}`);
+    } else if (rateDiff < 0) {
+      indicators.rate = chalk.green(` ↓${Math.abs(rateDiff)}`);
+    }
   }
 
-  // Daily limit 變化
+  // Daily limit 變化（優先使用本地追蹤數據）
   if (current.limits.daily.limit && last.limits.daily.limit) {
-    const dailyDiff = current.limits.daily.used - last.limits.daily.used;
-    if (dailyDiff > 0) {
-      indicators.daily = chalk.red(` ↑${dailyDiff}`);
-    } else if (dailyDiff < 0) {
-      indicators.daily = chalk.green(` ↓${Math.abs(dailyDiff)}`);
+    const getCurrentDaily = (status) => {
+      return status.limits.daily.localTracked ? 
+        status.limits.daily.localTracked.used : 
+        status.limits.daily.used;
+    };
+    
+    const currentDaily = getCurrentDaily(current);
+    const lastDaily = getCurrentDaily(last);
+    
+    if (currentDaily !== null && lastDaily !== null) {
+      const dailyDiff = currentDaily - lastDaily;
+      if (dailyDiff > 0) {
+        indicators.daily = chalk.red(` ↑${dailyDiff}`);
+      } else if (dailyDiff < 0) {
+        indicators.daily = chalk.green(` ↓${Math.abs(dailyDiff)}`);
+      }
     }
   }
 

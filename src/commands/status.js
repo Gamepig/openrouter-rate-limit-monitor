@@ -205,10 +205,19 @@ function formatCreditsUsage(usage) {
 function formatRateLimit(rate) {
   if (!rate.limit) return '無限制';
   
-  const percentage = Math.round((rate.used / rate.limit) * 100);
-  const color = percentage > 90 ? 'red' : percentage > 70 ? 'yellow' : 'green';
+  // 如果有即時資料，顯示詳細使用情況
+  if (rate.hasRealTimeData && rate.used !== null) {
+    const percentage = Math.round((rate.used / rate.limit) * 100);
+    const color = percentage > 90 ? 'red' : percentage > 70 ? 'yellow' : 'green';
+    
+    return chalk[color](`${rate.used}/${rate.limit} (${percentage}%)`) + 
+           chalk.gray(` - 剩餘${rate.remaining}次`);
+  }
   
-  return chalk[color](`${rate.used}/${rate.limit} (${percentage}%)`);
+  // 沒有即時資料時的顯示
+  const noteText = rate.note || '';
+  return chalk.yellow(`${rate.limit}/分鐘限制`) + 
+         (noteText ? chalk.gray(` - ${noteText}`) : '');
 }
 
 /**
@@ -219,6 +228,28 @@ function formatRateLimit(rate) {
 function formatDailyLimit(daily) {
   if (!daily.limit) {
     return daily.note ? chalk.gray(daily.note) : '無限制';
+  }
+  
+  // 如果有本地追蹤資料，優先顯示
+  if (daily.localTracked) {
+    const tracked = daily.localTracked;
+    const percentage = tracked.percentage;
+    const color = tracked.status === 'critical' ? 'red' : 
+                  tracked.status === 'warning' ? 'yellow' : 'green';
+    
+    const baseText = `${tracked.used}/${daily.limit} (${percentage}%)`;
+    const noteText = ` - ${tracked.note}`;
+    
+    return chalk[color](baseText) + chalk.gray(noteText);
+  }
+  
+  // 處理 OpenRouter API 不提供每日使用量的情況
+  if (daily.used === null || daily.used === undefined) {
+    const limitText = `每日限制: ${daily.limit} 次請求`;
+    const noteText = daily.note ? ` - ${daily.note}` : '';
+    const apiNote = daily.apiLimitation ? ` (${daily.apiLimitation})` : '';
+    
+    return chalk.blue(limitText) + chalk.gray(noteText + apiNote);
   }
   
   const percentage = Math.round((daily.used / daily.limit) * 100);
